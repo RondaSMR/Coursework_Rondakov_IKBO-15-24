@@ -1,0 +1,229 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+
+env:
+  DOCKER_REGISTRY: docker.io
+  STACK_NAME: insurance
+
+jobs:
+  ci:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install flake8
+
+      - name: Lint Python code
+        run: |
+          flake8 backend-api/app.py --max-line-length=120 --ignore=E501,W503 || true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker images
+        run: |
+          docker build -t insurance-backend:latest -f backend-api/Dockerfile backend-api/
+          docker build -t insurance-frontend:latest -f frontend/Dockerfile frontend/
+          docker build -t insurance-nginx:latest -f nginx-proxy/Dockerfile nginx-proxy/
+
+      - name: Start services with docker-compose
+        run: |
+          docker-compose up -d
+
+      - name: Wait for services to be healthy
+        run: |
+          echo "Waiting for services to start..."
+          sleep 30
+          
+          # Check database health
+          timeout 60 bash -c 'until docker-compose exec -T database pg_isready -U postgres; do sleep 2; done'
+          
+          # Check backend health
+          timeout 60 bash -c 'until curl -f http://localhost/api/health || exit 1; do sleep 2; done'
+
+      - name: Test API endpoints
+        run: |
+          # Test creating a policy
+          RESPONSE=$(curl -s -X POST http://localhost/api/policies \
+            -H "Content-Type: application/json" \
+            -d '{"client_name":"Test User","email":"test@example.com"}')
+          
+          echo "Response: $RESPONSE"
+          
+          # Check if response contains policy_id
+          if echo "$RESPONSE" | grep -q "policy_id"; then
+            echo "✓ Policy creation test passed"
+          else
+            echo "✗ Policy creation test failed"
+            exit 1
+          fi
+          
+          # Test getting policies
+          POLICIES=$(curl -s http://localhost/api/policies)
+          echo "Policies: $POLICIES"
+          
+          if echo "$POLICIES" | grep -q "Test User"; then
+            echo "✓ Get policies test passed"
+          else
+            echo "✗ Get policies test failed"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose down -v
+
+  push-images:
+    name: Push Images to Registry
+    needs: ci
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend-api
+          file: ./backend-api/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/insurance-backend:latest
+            ${{ secrets.DOCKER_USERNAME }}/insurance-backend:${{ github.sha }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/insurance-frontend:latest
+            ${{ secrets.DOCKER_USERNAME }}/insurance-frontend:${{ github.sha }}
+
+      - name: Build and push nginx image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./nginx-proxy
+          file: ./nginx-proxy/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/insurance-nginx:latest
+            ${{ secrets.DOCKER_USERNAME }}/insurance-nginx:${{ github.sha }}
+
+  deploy:
+    name: Deploy to Docker Swarm
+    needs: push-images
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add SSH known hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.SWARM_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy files to Swarm manager
+        run: |
+          scp docker-stack.yml ${{ secrets.SWARM_HOST }}:/tmp/
+          scp database/init.sql ${{ secrets.SWARM_HOST }}:/tmp/init.sql
+          scp nginx-proxy/nginx.conf ${{ secrets.SWARM_HOST }}:/tmp/nginx.conf
+
+      - name: Deploy stack
+        run: |
+          ssh ${{ secrets.SWARM_HOST }} bash -s << EOF
+            set -e
+            
+            # Check if Swarm is initialized
+            if ! docker info | grep -q "Swarm: active"; then
+              echo "Initializing Docker Swarm..."
+              docker swarm init
+            fi
+            
+            # Create secret for PostgreSQL password if not exists
+            if ! docker secret ls | grep -q postgres_password; then
+              echo "postgres" | docker secret create postgres_password -
+            fi
+            
+            # Create configs if not exist
+            if ! docker config ls | grep -q postgres_init; then
+              docker config create postgres_init /tmp/init.sql
+            fi
+            
+            if ! docker config ls | grep -q nginx_config; then
+              docker config create nginx_config /tmp/nginx.conf
+            fi
+            
+            # Login to Docker Hub
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+            
+            # Update image names in docker-stack.yml for registry
+            DOCKER_USER="${{ secrets.DOCKER_USERNAME }}"
+            sed -i "s|insurance-backend:latest|\${DOCKER_USER}/insurance-backend:latest|g" /tmp/docker-stack.yml
+            sed -i "s|insurance-frontend:latest|\${DOCKER_USER}/insurance-frontend:latest|g" /tmp/docker-stack.yml
+            sed -i "s|insurance-nginx:latest|\${DOCKER_USER}/insurance-nginx:latest|g" /tmp/docker-stack.yml
+            
+            # Deploy stack
+            docker stack deploy -c /tmp/docker-stack.yml ${{ env.STACK_NAME }} --with-registry-auth
+            
+            # Wait for services to be ready
+            echo "Waiting for services to start..."
+            sleep 30
+            
+            # Check stack status
+            docker stack services ${{ env.STACK_NAME }}
+            
+            # Check service status
+            docker service ls | grep ${{ env.STACK_NAME }}
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh ${{ secrets.SWARM_HOST }} bash -s << EOF
+            set -e
+            
+            echo "Checking service status..."
+            docker stack services ${{ env.STACK_NAME }}
+            
+            echo "Checking service replicas..."
+            docker service ls | grep ${{ env.STACK_NAME }}
+            
+            # Wait a bit more and check health
+            sleep 20
+            
+            echo "Deployment verification complete"
+          EOF
