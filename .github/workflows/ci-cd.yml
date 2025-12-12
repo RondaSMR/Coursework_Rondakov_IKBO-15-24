@@ -40,9 +40,7 @@ jobs:
           sudo apt-get update
           sudo curl -SL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
           sudo chmod +x /usr/local/bin/docker-compose
-          sudo mkdir -p /usr/libexec/docker/cli-plugins
-          sudo ln -sf /usr/local/bin/docker-compose /usr/libexec/docker/cli-plugins/docker-compose
-          docker compose version
+          docker-compose version
 
       - name: Build Docker images
         run: |
@@ -50,9 +48,9 @@ jobs:
           docker build -t insurance-frontend:latest -f frontend/Dockerfile frontend/
           docker build -t insurance-nginx:latest -f nginx-proxy/Dockerfile nginx-proxy/
 
-      - name: Start services with docker compose
+      - name: Start services with docker-compose
         run: |
-          docker compose up -d
+          docker-compose up -d
 
       - name: Wait for services to be healthy
         run: |
@@ -60,7 +58,7 @@ jobs:
           sleep 30
           
           # Check database health
-          timeout 60 bash -c 'until docker compose exec -T database pg_isready -U postgres; do sleep 2; done'
+          timeout 60 bash -c 'until docker-compose exec -T database pg_isready -U postgres; do sleep 2; done'
           
           # Check backend health
           timeout 60 bash -c 'until curl -f http://localhost/api/health || exit 1; do sleep 2; done'
@@ -96,7 +94,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          docker compose down -v
+          docker-compose down -v
 
   push-images:
     name: Push Images to Registry
