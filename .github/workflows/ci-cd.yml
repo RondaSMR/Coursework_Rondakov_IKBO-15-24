@@ -35,15 +35,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Install Docker Compose plugin
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker-compose-plugin
+          docker compose version
+
       - name: Build Docker images
         run: |
           docker build -t insurance-backend:latest -f backend-api/Dockerfile backend-api/
           docker build -t insurance-frontend:latest -f frontend/Dockerfile frontend/
           docker build -t insurance-nginx:latest -f nginx-proxy/Dockerfile nginx-proxy/
 
-      - name: Start services with docker-compose
+      - name: Start services with docker compose
         run: |
-          docker-compose up -d
+          docker compose up -d
 
       - name: Wait for services to be healthy
         run: |
@@ -51,7 +57,7 @@ jobs:
           sleep 30
           
           # Check database health
-          timeout 60 bash -c 'until docker-compose exec -T database pg_isready -U postgres; do sleep 2; done'
+          timeout 60 bash -c 'until docker compose exec -T database pg_isready -U postgres; do sleep 2; done'
           
           # Check backend health
           timeout 60 bash -c 'until curl -f http://localhost/api/health || exit 1; do sleep 2; done'
@@ -87,7 +93,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          docker-compose down -v
+          docker compose down -v
 
   push-images:
     name: Push Images to Registry
