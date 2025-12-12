@@ -58,7 +58,7 @@ services:
 
   # Backend API
   backend-api:
-    image: insurance-backend:latest
+    image: ${DOCKER_REGISTRY:-docker.io}/${DOCKER_USERNAME:-insurance}/insurance-backend:${IMAGE_TAG:-latest}
     environment:
       DB_HOST: database
       DB_NAME: insurance_db
@@ -79,7 +79,7 @@ services:
 
   # Frontend
   frontend:
-    image: insurance-frontend:latest
+    image: ${DOCKER_REGISTRY:-docker.io}/${DOCKER_USERNAME:-insurance}/insurance-frontend:${IMAGE_TAG:-latest}
     deploy:
       replicas: 2
       restart_policy:
@@ -92,7 +92,7 @@ services:
 
   # Nginx Proxy
   nginx-proxy:
-    image: insurance-nginx:latest
+    image: ${DOCKER_REGISTRY:-docker.io}/${DOCKER_USERNAME:-insurance}/insurance-nginx:${IMAGE_TAG:-latest}
     configs:
       - source: nginx_config
         target: /etc/nginx/nginx.conf

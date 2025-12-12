@@ -200,13 +200,10 @@ jobs:
             # Login to Docker Hub
             echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
             
-            # Update image names in docker-stack.yml for registry
-            DOCKER_USER="${{ secrets.DOCKER_USERNAME }}"
-            sed -i "s|insurance-backend:latest|\${DOCKER_USER}/insurance-backend:latest|g" /tmp/docker-stack.yml
-            sed -i "s|insurance-frontend:latest|\${DOCKER_USER}/insurance-frontend:latest|g" /tmp/docker-stack.yml
-            sed -i "s|insurance-nginx:latest|\${DOCKER_USER}/insurance-nginx:latest|g" /tmp/docker-stack.yml
-            
             # Deploy stack
+            export DOCKER_REGISTRY=docker.io
+            export DOCKER_USERNAME="${{ secrets.DOCKER_USERNAME }}"
+            export IMAGE_TAG=latest
             docker stack deploy -c /tmp/docker-stack.yml ${{ env.STACK_NAME }} --with-registry-auth
             
             # Wait for services to be ready

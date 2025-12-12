@@ -7,3 +7,5 @@ secrets/
 docker-compose.override.yml
 coursework.md
 coursework_chapters_2_3.md
+id_ed25519
+id_ed25519.pub
